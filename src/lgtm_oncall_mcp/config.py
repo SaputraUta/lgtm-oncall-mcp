@@ -156,12 +156,32 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class GuardrailsConfig:
+    """Server-side safety gates for destructive tools."""
+
+    # How long a `propose_*` result stays valid before the matching
+    # `confirm_*` must be called. Short window = small attack surface.
+    proposal_ttl_seconds: int
+
+    # Optional path for the append-only audit log. Always also emitted to stderr.
+    audit_log_path: str | None
+
+    @classmethod
+    def from_env(cls) -> GuardrailsConfig:
+        return cls(
+            proposal_ttl_seconds=int(_optional("PROPOSAL_TTL_SECONDS", "60")),
+            audit_log_path=_optional("AUDIT_LOG_PATH") or None,
+        )
+
+
+@dataclass(frozen=True)
 class Config:
     grafana: GrafanaConfig
     labels: LabelConfig
     deploy_tags: DeployTagConfig
     vcs: VCSConfig
     server: ServerConfig
+    guardrails: GuardrailsConfig
 
     @classmethod
     def from_env(cls) -> Config:
@@ -171,4 +191,5 @@ class Config:
             deploy_tags=DeployTagConfig.from_env(),
             vcs=VCSConfig.from_env(),
             server=ServerConfig.from_env(),
+            guardrails=GuardrailsConfig.from_env(),
         )

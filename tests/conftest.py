@@ -11,6 +11,7 @@ from lgtm_oncall_mcp.config import (
     Config,
     DeployTagConfig,
     GrafanaConfig,
+    GuardrailsConfig,
     LabelConfig,
     ServerConfig,
     VCSConfig,
@@ -44,4 +45,5 @@ def cfg() -> Config:
             github=None,
         ),
         server=ServerConfig(host="127.0.0.1", port=8765, bearer_token=""),
+        guardrails=GuardrailsConfig(proposal_ttl_seconds=60, audit_log_path=None),
     )

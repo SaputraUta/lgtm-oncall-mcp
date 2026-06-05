@@ -6,26 +6,39 @@ If you find a security issue in `lgtm-oncall-mcp`, please **do not open a public
 
 I'll acknowledge within a few days and aim to ship a fix or workaround within two weeks for confirmed issues.
 
+## Built-in guardrails
+
+1. **Two-step approval for destructive tools.**
+   `rollback_deploy` and `propose_fix_pr` are not directly callable. They're split into `propose_*` / `confirm_*` pairs. `propose_*` validates inputs and returns a one-shot `proposal_id` that expires (default 60s). `confirm_*` requires that id. See the [Guardrails section in README](./README.md#guardrails) for the full flow.
+
+2. **Audit log.**
+   Every destructive action emits a structured JSON event to stderr (and optionally to `AUDIT_LOG_PATH`). Events cover `proposal_created`, `proposal_consumed`, `action_executed`, `action_failed`, `proposal_rejected`.
+
+3. **Tool binding on confirm.**
+   A `proposal_id` from `propose_rollback` cannot execute `confirm_pr_change`. The store verifies the tool name on every consume.
+
+4. **One-shot proposals.**
+   Once `confirm_*` succeeds, the proposal is gone. No replays.
+
 ## Known limitations (be aware before deploying)
 
-1. **Destructive tools are not server-side gated.**
-   `rollback_deploy` and `propose_fix_pr` will execute on any caller who can reach `/mcp`. The current safety mechanism is the agent's policy (e.g. SOUL.md telling the agent to ask for human confirmation). For higher trust, you must:
-   - Set `MCP_BEARER_TOKEN` and keep it out of repos
-   - Bind the server to loopback and tunnel
-   - Restrict VCS token scope to the minimum your `trigger_deploy` / `open_pr` actually needs
-   - Future versions will add server-side two-step approval (`propose_*` / `confirm_*` pair).
+1. **Agent-side confirmation is still recommended.**
+   The server-side guard prevents accidental approval but doesn't replace agent policy. SOUL.md / system prompts should still tell the agent to surface the proposal to the user and wait for explicit confirmation before calling `confirm_*`.
 
-2. **Tokens live in environment variables.**
+2. **No allowed-target list yet.**
+   `rollback_deploy` will roll back to ANY existing tag that matches the env naming convention. A curated "known-good" tag list is on the roadmap.
+
+3. **No cool-down / rate-limit between destructive actions.**
+   A buggy agent could open many proposals + confirms in quick succession. Run behind a reverse proxy with rate limits if exposing beyond loopback.
+
+4. **Tokens live in environment variables.**
    No secrets manager integration yet. Mount `.env` securely (e.g. systemd `EnvironmentFile=` with 600 perms, or your platform's secret store).
 
-3. **Cert pinning is opt-in.**
+5. **Cert pinning is opt-in.**
    If you point at a self-signed Grafana without setting `GRAFANA_CA_CERT_PATH`, the connection will fail closed (good). Do NOT add `verify=False` shortcuts.
 
-4. **No audit log yet.**
-   Tool calls are not logged to a tamper-evident store. Telegram / chat history is the only record. Roadmap.
-
-5. **No rate limiting on tool calls.**
-   A buggy or runaway agent could spam destructive tools. Run behind a reverse proxy with rate limits if exposing beyond loopback.
+6. **Proposals are in-memory.**
+   Server restart wipes all open proposals. This is intentional — restarts are rare and "forgetting" pending destructive actions is the safe default.
 
 ## Token scope recommendations
 

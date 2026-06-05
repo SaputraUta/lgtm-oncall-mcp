@@ -1,13 +1,30 @@
-"""Destructive actions: rollback_deploy, propose_fix_pr.
+"""Destructive actions, split into propose / confirm pairs.
 
-These tools route through the VCS adapter so the same code works for
-Bitbucket Cloud or GitHub.
+Every destructive tool is split in two:
+  - `propose_*` validates inputs, creates an audit-logged proposal, returns
+    `proposal_id` (no side effects).
+  - `confirm_*` consumes the id and executes. One-shot. Expired after
+    `PROPOSAL_TTL_SECONDS` (default 60s).
+
+This forces TWO deliberate tool calls — even if an LLM loose-interprets
+a user reply as approval, it cannot accidentally fire a destructive action
+without a fresh proposal_id from a separate, user-initiated propose_* call.
+
+Audit events:
+  proposal_created    — propose_* succeeded
+  proposal_consumed   — confirm_* consumed a proposal (about to execute)
+  action_executed     — execution succeeded; payload includes result
+  action_failed       — execution raised; payload includes the error string
+  proposal_rejected   — confirm_* called with bad/expired/wrong-tool id
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from ..approval import ProposalStore
+from ..audit import AuditLog
 
 if TYPE_CHECKING:  # pragma: no cover
     from fastmcp import FastMCP
@@ -20,39 +37,130 @@ if TYPE_CHECKING:  # pragma: no cover
 class HandsCtx:
     cfg: Config
     vcs: VCSAdapter
+    proposals: ProposalStore
+    audit: AuditLog
+
+
+# Tool names used for both proposal.tool and audit event scoping
+_T_ROLLBACK = "rollback_deploy"
+_T_PR = "propose_fix_pr"
 
 
 def register(mcp: FastMCP, ctx: HandsCtx) -> None:
     rules = ctx.cfg.deploy_tags
+    ttl = ctx.cfg.guardrails.proposal_ttl_seconds
 
-    def rollback_deploy(env: str, target_tag: str) -> dict:
-        """Re-run the deploy pipeline against an existing tag (rollback).
+    # ─────────────────────────────────────────────────────────
+    # rollback_deploy — propose + confirm
+    # ─────────────────────────────────────────────────────────
 
-        Does NOT create a new tag — it reruns the pipeline/workflow for the
-        tag you pass. Use after get_recent_deploys identifies a known-good tag.
+    def propose_rollback(env: str, target_tag: str) -> dict:
+        """Propose a rollback. Returns a short-lived `proposal_id`.
+
+        This does NOT execute the rollback. It only validates inputs, records
+        the intent in the audit log, and returns an id. To actually run the
+        rollback, call `confirm_rollback(proposal_id)` within the TTL
+        (default 60s).
 
         Args:
-            env: Environment ('prod', 'staging', 'dev', ...). The tag must
-                 match this env's naming convention (see DEPLOY_TAG_*).
+            env: Environment to roll back ('prod', 'staging', 'dev', ...).
+                 The tag must match this env's naming convention.
             target_tag: Existing tag name, e.g. 'v1.2.3' or 'v1.2.3-stag'.
 
-        Returns {"pipeline_id", "build_number", "url", "state"}.
-        Call ONLY after the user (or an alert flow) has confirmed the rollback.
-        This is a destructive action.
+        Returns {"proposal_id", "expires_in_seconds", "tool", "env", "target_tag"}.
+        Use the returned proposal_id with confirm_rollback to execute.
         """
         if not rules.matches(env, target_tag):
+            ctx.audit.emit(
+                "proposal_rejected",
+                tool=_T_ROLLBACK,
+                reason="tag_env_mismatch",
+                env=env,
+                target_tag=target_tag,
+            )
             raise ValueError(
                 f"tag {target_tag!r} doesn't match the naming convention for env={env!r}"
             )
-        result = ctx.vcs.trigger_deploy(env=env, ref=target_tag)
+        p = ctx.proposals.create(
+            tool=_T_ROLLBACK,
+            payload={"env": env, "target_tag": target_tag},
+            ttl_seconds=ttl,
+        )
+        ctx.audit.emit(
+            "proposal_created",
+            tool=_T_ROLLBACK,
+            proposal_id=p.proposal_id,
+            args=p.payload,
+            expires_in_s=p.ttl_seconds,
+        )
         return {
+            "proposal_id": p.proposal_id,
+            "expires_in_seconds": p.ttl_seconds,
+            "tool": _T_ROLLBACK,
+            "env": env,
+            "target_tag": target_tag,
+        }
+
+    def confirm_rollback(proposal_id: str) -> dict:
+        """Execute a previously-proposed rollback.
+
+        Args:
+            proposal_id: The id returned by propose_rollback.
+
+        Returns the pipeline result dict. Raises if the id is unknown,
+        expired, or was created for a different tool.
+        This is a destructive, one-shot action.
+        """
+        try:
+            p = ctx.proposals.consume(proposal_id, expected_tool=_T_ROLLBACK)
+        except (KeyError, TimeoutError, ValueError) as e:
+            ctx.audit.emit(
+                "proposal_rejected",
+                tool=_T_ROLLBACK,
+                proposal_id=proposal_id,
+                reason=type(e).__name__,
+                error=str(e),
+            )
+            raise
+
+        ctx.audit.emit(
+            "proposal_consumed",
+            tool=_T_ROLLBACK,
+            proposal_id=proposal_id,
+            args=p.payload,
+        )
+        try:
+            result = ctx.vcs.trigger_deploy(
+                env=p.payload["env"], ref=p.payload["target_tag"]
+            )
+        except Exception as e:
+            ctx.audit.emit(
+                "action_failed",
+                tool=_T_ROLLBACK,
+                proposal_id=proposal_id,
+                error=str(e),
+            )
+            raise
+
+        out = {
             "pipeline_id": result.pipeline_id,
             "build_number": result.build_number,
             "url": result.url,
             "state": result.state,
         }
+        ctx.audit.emit(
+            "action_executed",
+            tool=_T_ROLLBACK,
+            proposal_id=proposal_id,
+            result=out,
+        )
+        return out
 
-    def propose_fix_pr(
+    # ─────────────────────────────────────────────────────────
+    # propose_fix_pr — propose + confirm
+    # ─────────────────────────────────────────────────────────
+
+    def propose_pr_change(
         branch_name: str,
         file_path: str,
         new_content: str,
@@ -60,11 +168,11 @@ def register(mcp: FastMCP, ctx: HandsCtx) -> None:
         body: str,
         base_branch: str = "main",
     ) -> dict:
-        """Open a PR that replaces a file's contents with `new_content`.
+        """Propose a single-file PR. Returns a short-lived `proposal_id`.
 
-        Use when the bug is in code, you've analyzed via get_commit_diff, and
-        you have a corrected version of the file. The PR is opened against
-        `base_branch` — humans review and merge.
+        Does NOT open the PR. Records the intent + the file diff length to
+        the audit log and returns an id. Call `confirm_pr_change(proposal_id)`
+        within the TTL to actually open the branch + commit + PR.
 
         Args:
             branch_name: New branch name, e.g. 'ai-fix/null-form-1717'.
@@ -74,18 +182,93 @@ def register(mcp: FastMCP, ctx: HandsCtx) -> None:
             body: PR description (markdown ok).
             base_branch: Branch to branch from + open PR against (default 'main').
 
-        Returns {"pr_url", "pr_id", "branch"}.
-        Call ONLY after the fix is confirmed. Destructive action.
+        Returns {"proposal_id", "expires_in_seconds", "tool", "branch_name",
+                 "file_path", "title", "content_bytes"}.
         """
-        result = ctx.vcs.open_pr(
-            branch_name=branch_name,
-            file_path=file_path,
-            new_content=new_content,
-            title=title,
-            body=body,
-            base_branch=base_branch,
+        payload = {
+            "branch_name": branch_name,
+            "file_path": file_path,
+            "new_content": new_content,
+            "title": title,
+            "body": body,
+            "base_branch": base_branch,
+        }
+        p = ctx.proposals.create(tool=_T_PR, payload=payload, ttl_seconds=ttl)
+        ctx.audit.emit(
+            "proposal_created",
+            tool=_T_PR,
+            proposal_id=p.proposal_id,
+            # Don't dump full content into audit — it can be huge. Summarize.
+            args={
+                "branch_name": branch_name,
+                "file_path": file_path,
+                "title": title,
+                "base_branch": base_branch,
+                "content_bytes": len(new_content),
+            },
+            expires_in_s=p.ttl_seconds,
         )
-        return {"pr_url": result.pr_url, "pr_id": result.pr_id, "branch": result.branch}
+        return {
+            "proposal_id": p.proposal_id,
+            "expires_in_seconds": p.ttl_seconds,
+            "tool": _T_PR,
+            "branch_name": branch_name,
+            "file_path": file_path,
+            "title": title,
+            "content_bytes": len(new_content),
+        }
 
-    for fn in (rollback_deploy, propose_fix_pr):
+    def confirm_pr_change(proposal_id: str) -> dict:
+        """Execute a previously-proposed single-file PR.
+
+        Args:
+            proposal_id: The id returned by propose_pr_change.
+
+        Returns {"pr_url", "pr_id", "branch"}.
+        Destructive, one-shot.
+        """
+        try:
+            p = ctx.proposals.consume(proposal_id, expected_tool=_T_PR)
+        except (KeyError, TimeoutError, ValueError) as e:
+            ctx.audit.emit(
+                "proposal_rejected",
+                tool=_T_PR,
+                proposal_id=proposal_id,
+                reason=type(e).__name__,
+                error=str(e),
+            )
+            raise
+
+        ctx.audit.emit(
+            "proposal_consumed",
+            tool=_T_PR,
+            proposal_id=proposal_id,
+            args={
+                "branch_name": p.payload["branch_name"],
+                "file_path": p.payload["file_path"],
+                "title": p.payload["title"],
+                "content_bytes": len(p.payload["new_content"]),
+            },
+        )
+        try:
+            result = ctx.vcs.open_pr(**p.payload)
+        except Exception as e:
+            ctx.audit.emit(
+                "action_failed",
+                tool=_T_PR,
+                proposal_id=proposal_id,
+                error=str(e),
+            )
+            raise
+
+        out = {"pr_url": result.pr_url, "pr_id": result.pr_id, "branch": result.branch}
+        ctx.audit.emit(
+            "action_executed",
+            tool=_T_PR,
+            proposal_id=proposal_id,
+            result=out,
+        )
+        return out
+
+    for fn in (propose_rollback, confirm_rollback, propose_pr_change, confirm_pr_change):
         mcp.tool(fn)

@@ -7,6 +7,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from .approval import ProposalStore
+from .audit import AuditLog
 from .clients import grafana_client, loki_client, mimir_client
 from .config import Config
 from .tools import hands as hands_tools
@@ -44,6 +46,8 @@ def build_server() -> FastMCP:
     loki = loki_client(cfg.grafana)
     grafana = grafana_client(cfg.grafana)
     vcs = _build_vcs(cfg)
+    proposals = ProposalStore(default_ttl_seconds=cfg.guardrails.proposal_ttl_seconds)
+    audit = AuditLog(file_path=cfg.guardrails.audit_log_path)
 
     senses_tools.register(
         mcp,
@@ -55,7 +59,7 @@ def build_server() -> FastMCP:
     )
     hands_tools.register(
         mcp,
-        hands_tools.HandsCtx(cfg=cfg, vcs=vcs),
+        hands_tools.HandsCtx(cfg=cfg, vcs=vcs, proposals=proposals, audit=audit),
     )
 
     return mcp

@@ -35,9 +35,11 @@ Three groups, 16 tools total:
 - `capture_dashboard(uid, env, minutes)`
 - `capture_panel(dashboard_uid, panel_id, env, minutes)`
 
-**Hands** (destructive — the agent must confirm with the user before calling):
-- `rollback_deploy(env, target_tag)` — reruns the deploy pipeline for an existing tag
-- `propose_fix_pr(branch, file_path, new_content, title, body, base_branch)` — opens a PR with a single-file fix
+**Hands** (destructive, **two-step**: propose → confirm. See [Guardrails](#guardrails) below):
+- `propose_rollback(env, target_tag)` → returns `proposal_id` (no side effect)
+- `confirm_rollback(proposal_id)` → reruns the deploy pipeline. One-shot, expires in TTL.
+- `propose_pr_change(branch, file_path, new_content, title, body, base_branch)` → returns `proposal_id`
+- `confirm_pr_change(proposal_id)` → opens the PR. One-shot, expires in TTL.
 
 ---
 
@@ -194,6 +196,8 @@ jobs:
 | `MCP_HOST` | `127.0.0.1` | Bind address (use `0.0.0.0` only with `MCP_BEARER_TOKEN`) |
 | `MCP_PORT` | `8765` | Port |
 | `MCP_BEARER_TOKEN` | (empty) | Shared secret. If set, every request must include `Authorization: Bearer <token>`. Generate with `openssl rand -hex 32`. |
+| `PROPOSAL_TTL_SECONDS` | `60` | How long a `propose_*` result stays valid before the matching `confirm_*` must be called. |
+| `AUDIT_LOG_PATH` | (empty) | Append-only JSONL audit log. Empty = stderr only. |
 
 ---
 
@@ -224,12 +228,81 @@ The server is stateless. Run it close to your LGTM stack (in the same VPC if Mim
 
 ---
 
+## Guardrails
+
+Destructive tools (`rollback_deploy`, `propose_fix_pr`) are **not directly callable**. They're split into `propose_*` / `confirm_*` pairs and gated server-side:
+
+```
+Agent decides to rollback
+       ↓
+   propose_rollback(env, tag)
+       ↓
+   Server: validate tag matches env convention
+       ↓
+   Server: store proposal in-memory with TTL
+       ↓
+   Server: audit "proposal_created"
+       ↓
+   Returns {proposal_id, expires_in_seconds, ...}
+       ↓
+   (Agent surfaces it to user / waits for explicit "yes")
+       ↓
+   confirm_rollback(proposal_id)
+       ↓
+   Server: look up proposal — must exist, not be expired, not be a different tool
+       ↓
+   Server: pop proposal (one-shot)
+       ↓
+   Server: audit "proposal_consumed"
+       ↓
+   Server: call VCS → audit "action_executed" or "action_failed"
+       ↓
+   Returns pipeline result
+```
+
+**What this prevents:**
+- Agent loose-interpreting a "yes" or "ok" as approval — confirm requires a fresh `proposal_id` from a separate prior call.
+- Replay: each `proposal_id` is one-shot. Confirmed once, gone.
+- Cross-tool confusion: a `propose_rollback` id won't execute `confirm_pr_change`.
+- Stale approvals: ids expire (default 60s; tune via `PROPOSAL_TTL_SECONDS`).
+
+**What this does NOT prevent (yet):**
+- Allowed-target lists (rollback to ANY existing tag works — no curated list). Roadmap.
+- Cool-down between destructive actions. Roadmap.
+- Server restarts invalidate open proposals (this is intentional — safer default).
+
+### Audit log
+
+Every destructive action emits structured JSON events:
+
+```
+proposal_created    propose_* succeeded
+proposal_consumed   confirm_* consumed a proposal (about to execute)
+action_executed     execution succeeded — result included
+action_failed       execution raised — error included
+proposal_rejected   confirm_* called with bad/expired/wrong-tool id
+```
+
+Two sinks (both fire on each event):
+- **stderr** — always. systemd journal / container runtime captures it.
+- **file** — optional. Set `AUDIT_LOG_PATH=/var/log/lgtm-oncall-mcp/audit.jsonl` and it's appended line-by-line.
+
+The file format is JSONL — ship it to Loki via promtail, S3 via fluent-bit, anywhere. Example:
+
+```json
+{"ts":"2026-06-06T03:21:14Z","event":"proposal_created","tool":"rollback_deploy","proposal_id":"abc","args":{"env":"staging","target_tag":"v1-stag"},"expires_in_s":60}
+{"ts":"2026-06-06T03:21:33Z","event":"proposal_consumed","tool":"rollback_deploy","proposal_id":"abc","args":{"env":"staging","target_tag":"v1-stag"}}
+{"ts":"2026-06-06T03:21:34Z","event":"action_executed","tool":"rollback_deploy","proposal_id":"abc","result":{"pipeline_id":"...","state":"PENDING"}}
+```
+
+---
+
 ## Security notes
 
-- **Destructive tools are gated by the agent's policy**, not by the server. Today, `rollback_deploy` and `propose_fix_pr` are MCP-callable by anyone who can reach the server. Use SOUL.md / system-prompt instructions on the agent side to require user confirmation. *(Server-side approval gates are on the roadmap.)*
 - **Bearer-token auth** (`MCP_BEARER_TOKEN`) is supported but optional. If your transport isn't loopback or SSH-tunneled, **set the token**.
 - **Cert pinning** (`GRAFANA_CA_CERT_PATH`) is supported for self-signed Grafana setups. Prefer pinning over `verify=False`.
 - **No secrets are written to disk** by the server. Tokens live only in environment variables.
+- **Destructive actions go through the propose/confirm pattern** (see [Guardrails](#guardrails)). Even with that, an agent on the LLM side should still require explicit user confirmation before calling `confirm_*`.
 
 ---
 
