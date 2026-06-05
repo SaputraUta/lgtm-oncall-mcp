@@ -1,0 +1,174 @@
+"""Environment-driven configuration. Loaded once at server startup."""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from typing import Literal
+
+
+def _required(key: str) -> str:
+    val = os.environ.get(key, "").strip()
+    if not val:
+        raise RuntimeError(f"required env var {key} is unset or empty")
+    return val
+
+
+def _optional(key: str, default: str = "") -> str:
+    return os.environ.get(key, default).strip()
+
+
+@dataclass(frozen=True)
+class GrafanaConfig:
+    url: str
+    token: str
+    mimir_ds_uid: str
+    loki_ds_uid: str
+    ca_cert_path: str | None  # absolute path or None
+
+    @classmethod
+    def from_env(cls) -> GrafanaConfig:
+        cert = _optional("GRAFANA_CA_CERT_PATH") or None
+        return cls(
+            url=_required("GRAFANA_URL").rstrip("/"),
+            token=_required("GRAFANA_TOKEN"),
+            mimir_ds_uid=_required("MIMIR_DS_UID"),
+            loki_ds_uid=_required("LOKI_DS_UID"),
+            ca_cert_path=cert,
+        )
+
+
+@dataclass(frozen=True)
+class LabelConfig:
+    """How services are labeled in Mimir/Loki."""
+
+    env_key: str
+    team_key: str
+    team_value: str  # empty → don't filter by team
+
+    @classmethod
+    def from_env(cls) -> LabelConfig:
+        return cls(
+            env_key=_optional("ENV_LABEL_KEY", "env"),
+            team_key=_optional("TEAM_LABEL_KEY", "team"),
+            team_value=_optional("TEAM_LABEL_VALUE"),
+        )
+
+    def selector(self, env: str, extra: str = "") -> str:
+        """Return a PromQL/LogQL selector body: env="...",team="..." plus extras."""
+        parts = [f'{self.env_key}="{env}"']
+        if self.team_value:
+            parts.append(f'{self.team_key}="{self.team_value}"')
+        if extra:
+            parts.append(extra)
+        return ",".join(parts)
+
+
+@dataclass(frozen=True)
+class DeployTagConfig:
+    """How environments map to git tags."""
+
+    prod_regex: re.Pattern[str]
+    nonprod_suffixes: dict[str, str]  # env name → tag suffix
+
+    @classmethod
+    def from_env(cls) -> DeployTagConfig:
+        return cls(
+            prod_regex=re.compile(_optional("DEPLOY_TAG_PROD_REGEX", r"^v\d+\.\d+\.\d+$")),
+            nonprod_suffixes={
+                "dev": _optional("DEPLOY_TAG_NONPROD_SUFFIX_DEV", "-dev"),
+                "staging": _optional("DEPLOY_TAG_NONPROD_SUFFIX_STAGING", "-stag"),
+            },
+        )
+
+    def matches(self, env: str, tag: str) -> bool:
+        if env == "prod":
+            return bool(self.prod_regex.match(tag))
+        suffix = self.nonprod_suffixes.get(env)
+        return bool(suffix) and tag.endswith(suffix)
+
+
+VCSProvider = Literal["bitbucket", "github"]
+
+
+@dataclass(frozen=True)
+class BitbucketConfig:
+    email: str
+    api_token: str
+    workspace: str
+    repo_slug: str
+
+
+@dataclass(frozen=True)
+class GitHubConfig:
+    token: str
+    owner: str
+    repo: str
+    deploy_workflow: str
+    api_base: str
+
+
+@dataclass(frozen=True)
+class VCSConfig:
+    provider: VCSProvider
+    bitbucket: BitbucketConfig | None
+    github: GitHubConfig | None
+
+    @classmethod
+    def from_env(cls) -> VCSConfig:
+        provider = _optional("VCS_PROVIDER", "bitbucket").lower()
+        if provider not in ("bitbucket", "github"):
+            raise RuntimeError(f"VCS_PROVIDER must be 'bitbucket' or 'github', got {provider!r}")
+        bb = None
+        gh = None
+        if provider == "bitbucket":
+            bb = BitbucketConfig(
+                email=_required("BITBUCKET_EMAIL"),
+                api_token=_required("BITBUCKET_API_TOKEN"),
+                workspace=_required("BITBUCKET_WORKSPACE"),
+                repo_slug=_required("BITBUCKET_REPO_SLUG"),
+            )
+        else:
+            gh = GitHubConfig(
+                token=_required("GITHUB_TOKEN"),
+                owner=_required("GITHUB_OWNER"),
+                repo=_required("GITHUB_REPO"),
+                deploy_workflow=_optional("GITHUB_DEPLOY_WORKFLOW", "deploy.yml"),
+                api_base=_optional("GITHUB_API_BASE", "https://api.github.com").rstrip("/"),
+            )
+        return cls(provider=provider, bitbucket=bb, github=gh)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class ServerConfig:
+    host: str
+    port: int
+    bearer_token: str  # empty → no auth
+
+    @classmethod
+    def from_env(cls) -> ServerConfig:
+        return cls(
+            host=_optional("MCP_HOST", "127.0.0.1"),
+            port=int(_optional("MCP_PORT", "8765")),
+            bearer_token=_optional("MCP_BEARER_TOKEN"),
+        )
+
+
+@dataclass(frozen=True)
+class Config:
+    grafana: GrafanaConfig
+    labels: LabelConfig
+    deploy_tags: DeployTagConfig
+    vcs: VCSConfig
+    server: ServerConfig
+
+    @classmethod
+    def from_env(cls) -> Config:
+        return cls(
+            grafana=GrafanaConfig.from_env(),
+            labels=LabelConfig.from_env(),
+            deploy_tags=DeployTagConfig.from_env(),
+            vcs=VCSConfig.from_env(),
+            server=ServerConfig.from_env(),
+        )

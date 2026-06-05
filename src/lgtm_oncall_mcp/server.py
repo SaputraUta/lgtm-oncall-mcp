@@ -1,0 +1,78 @@
+"""FastMCP server entrypoint — wires config, clients, VCS adapter, tools."""
+
+from __future__ import annotations
+
+from fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from .clients import grafana_client, loki_client, mimir_client
+from .config import Config
+from .tools import hands as hands_tools
+from .tools import senses as senses_tools
+from .tools import vision as vision_tools
+from .vcs.base import VCSAdapter
+from .vcs.bitbucket import BitbucketAdapter
+from .vcs.github import GitHubAdapter
+
+
+def _build_vcs(cfg: Config) -> VCSAdapter:
+    if cfg.vcs.provider == "bitbucket":
+        assert cfg.vcs.bitbucket is not None
+        return BitbucketAdapter(cfg.vcs.bitbucket)
+    assert cfg.vcs.github is not None
+    return GitHubAdapter(cfg.vcs.github)
+
+
+class BearerTokenAuth(BaseHTTPMiddleware):
+    def __init__(self, app, expected: str):
+        super().__init__(app)
+        self._expected = f"Bearer {expected}"
+
+    async def dispatch(self, request: Request, call_next):
+        if request.headers.get("authorization") != self._expected:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+def build_server() -> FastMCP:
+    cfg = Config.from_env()
+    mcp = FastMCP("lgtm-oncall-mcp")
+
+    mimir = mimir_client(cfg.grafana)
+    loki = loki_client(cfg.grafana)
+    grafana = grafana_client(cfg.grafana)
+    vcs = _build_vcs(cfg)
+
+    senses_tools.register(
+        mcp,
+        senses_tools.SensesCtx(mimir=mimir, loki=loki, grafana=grafana, cfg=cfg, vcs=vcs),
+    )
+    vision_tools.register(
+        mcp,
+        vision_tools.VisionCtx(grafana=grafana, cfg_grafana=cfg.grafana),
+    )
+    hands_tools.register(
+        mcp,
+        hands_tools.HandsCtx(cfg=cfg, vcs=vcs),
+    )
+
+    return mcp
+
+
+def main() -> None:
+    cfg = Config.from_env()
+    mcp = build_server()
+
+    # Apply bearer-token middleware if configured
+    if cfg.server.bearer_token:
+        # FastMCP exposes its Starlette app via http_app() in 3.x
+        app = mcp.http_app()
+        app.add_middleware(BearerTokenAuth, expected=cfg.server.bearer_token)
+
+    mcp.run(transport="http", host=cfg.server.host, port=cfg.server.port)
+
+
+if __name__ == "__main__":
+    main()
