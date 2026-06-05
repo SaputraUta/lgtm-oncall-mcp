@@ -118,32 +118,82 @@ Wire your Grafana alert contact point to the agent's webhook, and the agent will
 
 All configuration is environment-driven. Copy `.env.example` to `.env` to start.
 
-| Var | Required | Default | Purpose |
-|---|---|---|---|
-| `GRAFANA_URL` | yes | — | Base URL of your Grafana |
-| `GRAFANA_TOKEN` | yes | — | Service-account token |
-| `MIMIR_DS_UID` | yes | — | Mimir/Prometheus datasource UID |
-| `LOKI_DS_UID` | yes | — | Loki datasource UID |
-| `GRAFANA_CA_CERT_PATH` | no | — | Path to pinned cert (recommended for self-signed) |
-| `ENV_LABEL_KEY` | no | `env` | Label key for environment |
-| `TEAM_LABEL_KEY` | no | `team` | Label key for team |
-| `TEAM_LABEL_VALUE` | no | (empty) | Restrict queries to one team |
-| `VCS_PROVIDER` | no | `bitbucket` | `bitbucket` or `github` |
-| `BITBUCKET_EMAIL` | bb | — | Email for Atlassian API token Basic auth |
-| `BITBUCKET_API_TOKEN` | bb | — | Atlassian API token (ATAT…) |
-| `BITBUCKET_WORKSPACE` | bb | — | e.g. `mycompany` |
-| `BITBUCKET_REPO_SLUG` | bb | — | e.g. `my-app` |
-| `GITHUB_TOKEN` | gh | — | Fine-grained PAT |
-| `GITHUB_OWNER` | gh | — | e.g. `myorg` |
-| `GITHUB_REPO` | gh | — | e.g. `my-app` |
-| `GITHUB_DEPLOY_WORKFLOW` | gh | `deploy.yml` | Workflow file for `rollback_deploy` |
-| `GITHUB_API_BASE` | no | `https://api.github.com` | For GitHub Enterprise |
-| `DEPLOY_TAG_PROD_REGEX` | no | `^v\d+\.\d+\.\d+$` | Tags that match → prod |
-| `DEPLOY_TAG_NONPROD_SUFFIX_DEV` | no | `-dev` | Dev tag suffix |
-| `DEPLOY_TAG_NONPROD_SUFFIX_STAGING` | no | `-stag` | Staging tag suffix |
-| `MCP_HOST` | no | `127.0.0.1` | Bind address |
-| `MCP_PORT` | no | `8765` | Port |
-| `MCP_BEARER_TOKEN` | no | (empty) | If set, required in `Authorization` header |
+### Always required
+
+| Var | Default | Purpose |
+|---|---|---|
+| `GRAFANA_URL` | — | Base URL of your Grafana |
+| `GRAFANA_TOKEN` | — | Grafana service-account token (Viewer scope is enough) |
+| `MIMIR_DS_UID` | — | Mimir/Prometheus datasource UID in Grafana |
+| `LOKI_DS_UID` | — | Loki datasource UID in Grafana |
+| `VCS_PROVIDER` | `bitbucket` | Pick one: `bitbucket` or `github` |
+
+### Required if `VCS_PROVIDER=bitbucket`
+
+| Var | Default | Purpose |
+|---|---|---|
+| `BITBUCKET_EMAIL` | — | Email associated with your Atlassian API token |
+| `BITBUCKET_API_TOKEN` | — | Atlassian API token (starts with `ATAT…`) — **not** a username/password |
+| `BITBUCKET_WORKSPACE` | — | e.g. `mycompany` (the `<workspace>` in `bitbucket.org/<workspace>/<repo>`) |
+| `BITBUCKET_REPO_SLUG` | — | e.g. `my-app` |
+
+Token scopes you need (Atlassian → Manage account → API tokens → Create with scopes):
+- `read:repository:bitbucket`
+- `read:pullrequest:bitbucket`
+- `write:repository:bitbucket` *(only if you use `propose_fix_pr`)*
+- `write:pullrequest:bitbucket` *(only if you use `propose_fix_pr`)*
+- `read:pipeline:bitbucket`
+- `write:pipeline:bitbucket` *(only if you use `rollback_deploy`)*
+
+### Required if `VCS_PROVIDER=github`
+
+| Var | Default | Purpose |
+|---|---|---|
+| `GITHUB_TOKEN` | — | Fine-grained PAT scoped to ONE repo |
+| `GITHUB_OWNER` | — | e.g. `myorg` or your username |
+| `GITHUB_REPO` | — | e.g. `my-app` |
+| `GITHUB_DEPLOY_WORKFLOW` | `deploy.yml` | The workflow file `rollback_deploy` dispatches. Must exist at `.github/workflows/<name>` with `on: workflow_dispatch` |
+| `GITHUB_API_BASE` | `https://api.github.com` | Override only for GitHub Enterprise |
+
+PAT permissions you need (GitHub → Settings → Developer settings → Fine-grained tokens):
+- **Contents**: read *(+ write only if you use `propose_fix_pr`)*
+- **Pull requests**: read *(+ write only if you use `propose_fix_pr`)*
+- **Actions**: read *(+ write only if you use `rollback_deploy`)*
+
+The `GITHUB_DEPLOY_WORKFLOW` must define `workflow_dispatch` with an `env` input. Minimal skeleton:
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Environment'
+        required: true
+        type: string
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/deploy.sh "${{ inputs.env }}"
+```
+
+### Optional
+
+| Var | Default | Purpose |
+|---|---|---|
+| `GRAFANA_CA_CERT_PATH` | — | Pin Grafana's TLS cert to a file (recommended for self-signed) |
+| `ENV_LABEL_KEY` | `env` | Label key in Mimir/Loki that identifies environment |
+| `TEAM_LABEL_KEY` | `team` | Label key for team |
+| `TEAM_LABEL_VALUE` | (empty) | Restrict queries to one team — leave empty to skip team filtering |
+| `DEPLOY_TAG_PROD_REGEX` | `^v\d+\.\d+\.\d+$` | Regex that matches prod tags |
+| `DEPLOY_TAG_NONPROD_SUFFIX_DEV` | `-dev` | Dev tag suffix |
+| `DEPLOY_TAG_NONPROD_SUFFIX_STAGING` | `-stag` | Staging tag suffix |
+| `MCP_HOST` | `127.0.0.1` | Bind address (use `0.0.0.0` only with `MCP_BEARER_TOKEN`) |
+| `MCP_PORT` | `8765` | Port |
+| `MCP_BEARER_TOKEN` | (empty) | Shared secret. If set, every request must include `Authorization: Bearer <token>`. Generate with `openssl rand -hex 32`. |
 
 ---
 
