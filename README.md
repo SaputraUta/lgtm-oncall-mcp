@@ -77,6 +77,8 @@ You should get a JSON response listing capabilities.
 
 ## Connecting MCP clients
 
+Full per-client guides with troubleshooting are in [`examples/clients/`](./examples/clients/). Short version below.
+
 ### Claude Code (CLI)
 
 ```bash
