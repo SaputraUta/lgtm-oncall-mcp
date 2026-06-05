@@ -18,7 +18,7 @@ if TYPE_CHECKING:  # pragma: no cover
 @dataclass
 class VisionCtx:
     grafana: httpx.Client
-    cfg_grafana: "GrafanaConfig"
+    cfg_grafana: GrafanaConfig
 
 
 def _screenshot(url: str, token: str, viewport: tuple[int, int], full_page: bool) -> bytes:
@@ -42,7 +42,7 @@ def _screenshot(url: str, token: str, viewport: tuple[int, int], full_page: bool
     return png
 
 
-def register(mcp: "FastMCP", ctx: VisionCtx) -> None:
+def register(mcp: FastMCP, ctx: VisionCtx) -> None:
     def list_dashboards() -> list[dict]:
         """List Grafana dashboards.
 

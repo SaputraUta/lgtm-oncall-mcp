@@ -12,7 +12,7 @@ dist/
 .ruff_cache/
 
 # Virtual envs
-.venv/
+.venv*/
 venv/
 env/
 

@@ -18,11 +18,11 @@ if TYPE_CHECKING:  # pragma: no cover
 
 @dataclass
 class HandsCtx:
-    cfg: "Config"
-    vcs: "VCSAdapter"
+    cfg: Config
+    vcs: VCSAdapter
 
 
-def register(mcp: "FastMCP", ctx: HandsCtx) -> None:
+def register(mcp: FastMCP, ctx: HandsCtx) -> None:
     rules = ctx.cfg.deploy_tags
 
     def rollback_deploy(env: str, target_tag: str) -> dict:

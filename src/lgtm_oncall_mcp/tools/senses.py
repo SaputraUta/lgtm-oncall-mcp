@@ -21,8 +21,8 @@ class SensesCtx:
     mimir: httpx.Client
     loki: httpx.Client
     grafana: httpx.Client
-    cfg: "Config"
-    vcs: "VCSAdapter"
+    cfg: Config
+    vcs: VCSAdapter
 
 
 def _promql(ctx: SensesCtx, q: str) -> list[dict]:
@@ -40,7 +40,7 @@ def _scalar_or_zero(result: list[dict], precision: int) -> float:
     return round(val, precision)
 
 
-def register(mcp: "FastMCP", ctx: SensesCtx) -> None:
+def register(mcp: FastMCP, ctx: SensesCtx) -> None:
     labels = ctx.cfg.labels
 
     def ping() -> str:

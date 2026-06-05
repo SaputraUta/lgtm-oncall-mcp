@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 
 from ..config import BitbucketConfig
-from .base import Commit, PRResult, PipelineResult, TagInfo
+from .base import Commit, PipelineResult, PRResult, TagInfo
 
 
 class BitbucketAdapter:

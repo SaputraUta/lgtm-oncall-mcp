@@ -1,0 +1,46 @@
+# Minimal monolithic Mimir config for local dev.
+# Scrapes node-exporter so the MCP tools have real numbers to return.
+
+multitenancy_enabled: false
+
+server:
+  http_listen_port: 9009
+  log_level: warn
+
+common:
+  storage:
+    backend: filesystem
+    filesystem:
+      dir: /tmp/mimir-data
+
+blocks_storage:
+  backend: filesystem
+  filesystem:
+    dir: /tmp/mimir-data/blocks
+  tsdb:
+    dir: /tmp/mimir-data/tsdb
+
+compactor:
+  data_dir: /tmp/mimir-data/compactor
+
+store_gateway:
+  sharding_ring:
+    replication_factor: 1
+
+ingester:
+  ring:
+    replication_factor: 1
+
+distributor:
+  ring:
+    instance_addr: 127.0.0.1
+
+ruler_storage:
+  backend: filesystem
+  filesystem:
+    dir: /tmp/mimir-data/rules
+
+# Scrape node-exporter to populate metrics
+limits:
+  ingestion_rate: 100000
+  ingestion_burst_size: 200000

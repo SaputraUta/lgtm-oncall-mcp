@@ -7,7 +7,7 @@ import base64
 import httpx
 
 from ..config import GitHubConfig
-from .base import Commit, PRResult, PipelineResult, TagInfo
+from .base import Commit, PipelineResult, PRResult, TagInfo
 
 
 class GitHubAdapter:

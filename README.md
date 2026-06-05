@@ -1,5 +1,9 @@
 # lgtm-oncall-mcp
 
+[![CI](https://github.com/SaputraUta/lgtm-oncall-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/SaputraUta/lgtm-oncall-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+
 > An MCP server that gives an LLM agent a typed, auditable on-call surface on top of the LGTM stack (**L**oki · **G**rafana · **T**empo · **M**imir) plus your VCS (Bitbucket Cloud or GitHub).
 
 Replaces broad shell-and-SSH agent power with narrow, schema-checked tools. Same toolbox works for autonomous on-call agents (e.g. Hermes responding to Grafana webhooks via Telegram) and interactive copilots (Claude Code, Claude Desktop, Cursor, …).
@@ -191,6 +195,22 @@ python -m playwright install chromium
 pytest      # tests
 ruff check  # lint
 ```
+
+### Try it without an AWS account
+
+A local docker-compose brings up Grafana + Mimir + Loki + a node-exporter so the sense tools have real data:
+
+```bash
+docker compose up -d
+open http://localhost:3000        # Grafana — anonymous Admin
+
+# In another shell:
+set -a; source .env.docker; set +a
+python -m lgtm_oncall_mcp
+# → MCP server listening, ready for any client
+```
+
+See `examples/docker/` for the Mimir + Grafana config files used by the stack.
 
 ---
 
