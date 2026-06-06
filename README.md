@@ -12,6 +12,27 @@ Replaces broad shell-and-SSH agent power with narrow, schema-checked tools. Same
 
 ---
 
+## Demo
+
+**Interactive — Claude Code driving the propose → confirm → verify flow against a real LGTM + Bitbucket stack:**
+
+![Claude Code rollback flow](docs/screenshots/claude-code-rollback.png)
+
+Three exchanges, all calling `lgtm-oncall` MCP tools:
+1. `propose rollback staging to v0.0.39-stag` — returns a one-shot `proposal_id` with TTL. No deploy yet.
+2. `yes, rollback` — agent calls `confirm_rollback` with the id; pipeline triggers.
+3. `pipeline finished, check` — agent re-pulls health metrics + diffs the tags to narrate what was rolled back from/to.
+
+**Autonomous — Hermes Agent (Nous Research) responding to a Grafana webhook in Telegram, using the same tools:**
+
+![Hermes Telegram triage](docs/screenshots/hermes-telegram-triage.png)
+
+Webhook fires → Hermes triages with the read-only `get_*` tools → proposes rollback to `v0.0.39-stag` → waits for user `yes` before calling `confirm_rollback`.
+
+Same 19 tools. Different operator. One MCP server.
+
+---
+
 ## What it gives the agent
 
 Three groups, 16 tools total:
