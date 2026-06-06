@@ -198,7 +198,7 @@ jobs:
 | `MCP_HOST` | `127.0.0.1` | Bind address (use `0.0.0.0` only with `MCP_BEARER_TOKEN`) |
 | `MCP_PORT` | `8765` | Port |
 | `MCP_BEARER_TOKEN` | (empty) | Shared secret. If set, every request must include `Authorization: Bearer <token>`. Generate with `openssl rand -hex 32`. |
-| `PROPOSAL_TTL_SECONDS` | `60` | How long a `propose_*` result stays valid before the matching `confirm_*` must be called. |
+| `PROPOSAL_TTL_SECONDS` | `600` | How long a `propose_*` result stays valid before the matching `confirm_*` must be called. 10 min default lets a human read + decide in chat. |
 | `AUDIT_LOG_PATH` | (empty) | Append-only JSONL audit log. Empty = stderr only. |
 
 ---
@@ -266,7 +266,7 @@ Agent decides to rollback
 - Agent loose-interpreting a "yes" or "ok" as approval — confirm requires a fresh `proposal_id` from a separate prior call.
 - Replay: each `proposal_id` is one-shot. Confirmed once, gone.
 - Cross-tool confusion: a `propose_rollback` id won't execute `confirm_pr_change`.
-- Stale approvals: ids expire (default 60s; tune via `PROPOSAL_TTL_SECONDS`).
+- Stale approvals: ids expire (default 600s = 10 min; tune via `PROPOSAL_TTL_SECONDS`). The `propose_*` response includes both `expires_in_seconds` and `expires_at_utc` so the agent can surface the deadline to a human.
 
 **What this does NOT prevent (yet):**
 - Allowed-target lists (rollback to ANY existing tag works — no curated list). Roadmap.

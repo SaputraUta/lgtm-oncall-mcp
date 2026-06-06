@@ -169,7 +169,10 @@ class GuardrailsConfig:
     @classmethod
     def from_env(cls) -> GuardrailsConfig:
         return cls(
-            proposal_ttl_seconds=int(_optional("PROPOSAL_TTL_SECONDS", "60")),
+            # 600s (10 min) default: enough room for a human to read the
+            # proposal in chat, think, then reply. 60s was too tight for
+            # any realistic human-in-loop flow.
+            proposal_ttl_seconds=int(_optional("PROPOSAL_TTL_SECONDS", "600")),
             audit_log_path=_optional("AUDIT_LOG_PATH") or None,
         )
 

@@ -20,11 +20,16 @@ Audit events:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..approval import ProposalStore
 from ..audit import AuditLog
+
+
+def _iso_utc(epoch_seconds: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch_seconds))
 
 if TYPE_CHECKING:  # pragma: no cover
     from fastmcp import FastMCP
@@ -57,18 +62,22 @@ def register(mcp: FastMCP, ctx: HandsCtx) -> None:
     def propose_rollback(env: str, target_tag: str) -> dict:
         """Propose a rollback. Returns a short-lived `proposal_id`.
 
-        This does NOT execute the rollback. It only validates inputs, records
-        the intent in the audit log, and returns an id. To actually run the
-        rollback, call `confirm_rollback(proposal_id)` within the TTL
-        (default 60s).
+        Does NOT execute. Validates inputs, audit-logs the intent, returns
+        the id. Call `confirm_rollback(proposal_id)` within the TTL window
+        (default 600s / 10 min) to execute.
 
         Args:
             env: Environment to roll back ('prod', 'staging', 'dev', ...).
                  The tag must match this env's naming convention.
             target_tag: Existing tag name, e.g. 'v1.2.3' or 'v1.2.3-stag'.
 
-        Returns {"proposal_id", "expires_in_seconds", "tool", "env", "target_tag"}.
-        Use the returned proposal_id with confirm_rollback to execute.
+        Returns {"proposal_id", "expires_in_seconds", "expires_at_utc",
+                 "tool", "env", "target_tag"}.
+
+        When relaying this to a human (chat/Telegram), ALWAYS include the
+        `expires_at_utc` so they know the deadline. Example:
+            "Proposed rollback of staging to v1.2.3-stag.
+             Expires at 2026-06-06T14:30:00Z. Reply yes to confirm."
         """
         if not rules.matches(env, target_tag):
             ctx.audit.emit(
@@ -96,6 +105,7 @@ def register(mcp: FastMCP, ctx: HandsCtx) -> None:
         return {
             "proposal_id": p.proposal_id,
             "expires_in_seconds": p.ttl_seconds,
+            "expires_at_utc": _iso_utc(p.expires_at()),
             "tool": _T_ROLLBACK,
             "env": env,
             "target_tag": target_tag,
@@ -170,9 +180,13 @@ def register(mcp: FastMCP, ctx: HandsCtx) -> None:
     ) -> dict:
         """Propose a single-file PR. Returns a short-lived `proposal_id`.
 
-        Does NOT open the PR. Records the intent + the file diff length to
-        the audit log and returns an id. Call `confirm_pr_change(proposal_id)`
-        within the TTL to actually open the branch + commit + PR.
+        Does NOT open the PR. Records the intent + file size in the audit
+        log, returns the id. Call `confirm_pr_change(proposal_id)` within
+        the TTL window (default 600s / 10 min) to actually open the branch
+        + commit + PR.
+
+        When relaying to a human, ALWAYS include the `expires_at_utc` from
+        the response so they know the deadline.
 
         Args:
             branch_name: New branch name, e.g. 'ai-fix/null-form-1717'.
@@ -211,6 +225,7 @@ def register(mcp: FastMCP, ctx: HandsCtx) -> None:
         return {
             "proposal_id": p.proposal_id,
             "expires_in_seconds": p.ttl_seconds,
+            "expires_at_utc": _iso_utc(p.expires_at()),
             "tool": _T_PR,
             "branch_name": branch_name,
             "file_path": file_path,
