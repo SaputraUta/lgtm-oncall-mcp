@@ -8,6 +8,7 @@ import httpx
 
 from ..config import GitHubConfig
 from .base import Commit, PipelineResult, PRResult, TagInfo
+from .util import sort_tags_newest_first
 
 
 class GitHubAdapter:
@@ -25,23 +26,28 @@ class GitHubAdapter:
         )
 
     def list_tags(self, limit: int = 50) -> list[TagInfo]:
-        # GitHub /tags returns name + commit sha but not date/message; fetch
-        # commit details for each. Capped to avoid blowing the API quota.
+        # GitHub /tags returns name + commit sha but not date/message. We
+        # sort by semver name first, then enrich the top `limit` with commit
+        # details — this avoids spending API calls on tags we'll drop.
         r = self._client.get(
             f"/repos/{self._owner_repo}/tags",
-            params={"per_page": min(limit, 100)},
+            params={"per_page": 100},
         )
         r.raise_for_status()
+        raw = r.json()
+        # Build minimal TagInfo (no date/message yet) just so the sort key works
+        minimal = [TagInfo(tag=t["name"], sha=t["commit"]["sha"][:12], date="", message="") for t in raw]
+        top = sort_tags_newest_first(minimal)[:limit]
+        # Now enrich each kept tag with commit details
         out: list[TagInfo] = []
-        for t in r.json()[:limit]:
-            sha = t["commit"]["sha"]
-            cr = self._client.get(f"/repos/{self._owner_repo}/commits/{sha}")
+        for t in top:
+            cr = self._client.get(f"/repos/{self._owner_repo}/commits/{t.sha}")
             cr.raise_for_status()
             cj = cr.json()
             out.append(
                 TagInfo(
-                    tag=t["name"],
-                    sha=sha[:12],
+                    tag=t.tag,
+                    sha=t.sha,
                     date=cj.get("commit", {}).get("committer", {}).get("date", ""),
                     message=(cj.get("commit", {}).get("message") or "")
                     .strip()

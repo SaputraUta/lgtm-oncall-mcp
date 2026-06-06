@@ -6,6 +6,7 @@ import httpx
 
 from ..config import BitbucketConfig
 from .base import Commit, PipelineResult, PRResult, TagInfo
+from .util import sort_tags_newest_first
 
 
 class BitbucketAdapter:
@@ -19,9 +20,14 @@ class BitbucketAdapter:
         )
 
     def list_tags(self, limit: int = 50) -> list[TagInfo]:
+        # We deliberately do NOT use `?sort=-target.date` here. That sorts by
+        # the underlying COMMIT date, which gives wrong answers whenever a new
+        # tag is created at an older commit (re-deploy of a previous version,
+        # hotfix branch tagged from a side commit, etc.). Instead, we fetch a
+        # generous page and sort by tag NAME (semver) in Python.
         r = self._client.get(
             f"/2.0/repositories/{self._repo}/refs/tags",
-            params={"sort": "-target.date", "pagelen": min(limit, 100)},
+            params={"pagelen": 100},
         )
         r.raise_for_status()
         out: list[TagInfo] = []
@@ -35,9 +41,7 @@ class BitbucketAdapter:
                     message=(target.get("message") or "").strip().split("\n")[0],
                 )
             )
-            if len(out) >= limit:
-                break
-        return out
+        return sort_tags_newest_first(out)[:limit]
 
     def get_commit_diff(self, sha: str, max_chars: int = 50_000) -> str:
         r = self._client.get(f"/2.0/repositories/{self._repo}/diff/{sha}")
