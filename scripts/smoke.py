@@ -23,7 +23,6 @@ from typing import Any
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-
 ENV = sys.argv[1] if len(sys.argv) > 1 else "staging"
 URL = os.environ.get("MCP_URL", "http://127.0.0.1:8765/mcp")
 TOKEN = os.environ.get("MCP_BEARER_TOKEN", "").strip()
